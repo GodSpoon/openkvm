@@ -10,12 +10,10 @@ timeout = 30
 [vnc]
 path = "./noVNC"
 username = "openkvm"
-password = "CHANGE_ME"
+password = "passwd12"
 
 [keyboard]
-type = "serialport"
-src = "/dev/ttyACM0"
-ext = { baud = "921600" }
+type = "none"
 
 [video]
 type = "shell"
@@ -23,26 +21,20 @@ src = [
     "v4l2-ctl",
     "--device=/dev/video0",
     "--stream-mmap",
-    "--set-fmt-video=width=1920,height=1080,pixelformat=MJPG",
+    "--set-fmt-video=width=1920,height=1080,pixelformat=RGB3",
     "--stream-to=-",
 ]
-width = 1920
-height = 1080
+width = 1280
+height = 720
 frame_rate = 30
 quality = 85
 slice_count = 4
 
 [mouse]
-type = "serialport"
-src = "/dev/ttyACM0"
-ext = { baud = "921600" }
-cursor_x_scale = 17.00
-cursor_y_scale = 28.78
+type = "none"
 
 [button]
 type = "none"
 
 [clipboard]
-type = "serialport"
-src = "/dev/ttyACM0"
-ext = { baud = "921600" }
+type = "none"
