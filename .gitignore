@@ -1,0 +1,19 @@
+# Arduino CLI
+bin/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Go
+vendor/
+
+# Build output
+openkvm
+*.exe
+
+# Plans and handoffs (local only)
+thoughts/
