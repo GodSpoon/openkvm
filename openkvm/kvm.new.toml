@@ -1,0 +1,126 @@
+# This file is written in TOML format
+# See https://toml.io/en/
+
+[websocket]
+# `127.0.0.1:8080` listen for 127.0.0.1 only
+# `:8080` can be accessed by any device
+addr = ":8080"
+# VNC websockets path, this is the default value for noVNC.
+path = "/websockify"
+# CORS only apply for websocket connection only, not all HTTP requests.
+cors = false
+# Timeout for reading from websocket, in seconds.
+timeout = 30
+
+[vnc]
+# Path to a static served folder, noVNC is recommended.
+#path = "../noVNC"
+username = "openkvm"
+password = "passwd12"
+
+[keyboard]
+# `none`, `serialport`
+type = "serialport"
+src = "/dev/ttyACM0"
+ext = { baud = "921600" }
+
+[video]
+# Commands run before video capture. All of them must return 0, otherwise an error will be emitted.
+#setup_commands = [
+#    # test v4l2-ctl
+#    [
+#        "v4l2-ctl",
+#        "--all",
+#    ],
+#    # test ffmpeg
+#    [
+#        "ffmpeg",
+#        "-version",
+#    ],
+#    # reset usb to prevent device stall
+#    [
+#        "usbreset",
+#        "Hagibis",
+#    ],
+#]
+
+# `usb`, `shell`
+# `usb`: removed
+# `shell`: only mpeg format is supported
+type = "shell"
+
+# `usb`: either the index of video device or the path to video device.
+#src = ["0"]
+# `shell`: command to get frame
+src = [
+    "v4l2-ctl",
+    "--device=/dev/video0",
+    "--stream-mmap",
+    "--set-fmt-video=width=1280,height=720,pixelformat=MJPG",
+    "--stream-to=-",
+]
+# capture FaceTime camera on macOS
+#src = [
+#    "ffmpeg",
+#    "-f",
+#    "avfoundation",
+#    "-framerate",
+#    "30",
+#    "-pixel_format",
+#    "uyvy422",
+#    "-video_size",
+#    "1280x720",
+#    "-i",
+#    "default",
+#    "-f",
+#    "mjpeg",
+#    "-",
+#]
+
+width = 1280
+height = 720
+frame_rate = 24
+quality = 80
+# This is the base number of slices to divide the video into.
+#   4 means 4x4, 16 in total.
+slice_count = 4
+ext = ""
+
+[mouse]
+# `none`, `serialport`
+type = "serialport"
+src = "/dev/ttyACM0"
+ext = { baud = "921600" }
+
+# A factor to adjust the cursor move distance when the video is scaled.
+# Suggested scale:
+#   (1920, 1080):
+#     cursor_x_scale = 17.00
+#     cursor_x_scale = 28.78
+#   (1280, 720):
+#     cursor_x_scale = 25.6632
+#     cursor_y_scale = 45.5755
+cursor_x_scale = 25.6632
+cursor_y_scale = 45.5755
+
+[button]
+# `none`, `serialport`, `shell`
+type = "shell"
+# Demo for OrangePI https://github.com/orangepi-xunlong/wiringOP
+ext = { open = ["gpio", "mode", "$PIN", "out"], press = ["gpio", "write", "$PIN", "1"], release = ["gpio", "write", "$PIN", "0"] }
+# GPIO Pin for power button
+pwr_btn = "0"
+# GPIO Pin for reset button
+rst_btn = "1"
+# GPIO Pin for extra button
+ext_btn = "2"
+
+#type = "serialport" # see `km/esp32s3-arduino/main/main.ino` for more detail
+#src = "/dev/ttyACM0"
+#ext = { baud = "921600" }
+
+[clipboard]
+# `none`, `serialport`
+type = "serialport"
+src = "/dev/ttyACM0"
+ext = { baud = "921600" }
