@@ -9,8 +9,8 @@ timeout = 30
 
 [vnc]
 path = "./noVNC"
-username = "openkvm"
-password = "passwd12"
+username = ""
+password = ""
 
 [keyboard]
 type = "none"
