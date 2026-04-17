@@ -20,10 +20,10 @@ type = "shell"
 src = [
     "ffmpeg",
     "-re",
-    "-f",
-    "lavfi",
+    "-stream_loop",
+    "-1",
     "-i",
-    "testsrc2=size=1280x720:rate=30",
+    "/app/sample.webm",
     "-f",
     "mjpeg",
     "-q:v",
