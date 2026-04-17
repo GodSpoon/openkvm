@@ -24,6 +24,8 @@ src = [
     "-1",
     "-i",
     "/app/sample.webm",
+    "-vf",
+    "scale=1280:720",
     "-f",
     "mjpeg",
     "-q:v",
