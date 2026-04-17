@@ -18,11 +18,17 @@ type = "none"
 [video]
 type = "shell"
 src = [
-    "v4l2-ctl",
-    "--device=/dev/video0",
-    "--stream-mmap",
-    "--set-fmt-video=width=1920,height=1080,pixelformat=RGB3",
-    "--stream-to=-",
+    "ffmpeg",
+    "-re",
+    "-f",
+    "lavfi",
+    "-i",
+    "testsrc2=size=1280x720:rate=30",
+    "-f",
+    "mjpeg",
+    "-q:v",
+    "5",
+    "-",
 ]
 width = 1280
 height = 720

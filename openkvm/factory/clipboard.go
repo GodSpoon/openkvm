@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/allape/openkvm/config"
 	"github.com/allape/openkvm/kvm/clipboard"
+	"github.com/allape/openkvm/kvm/clipboard/none"
 	"github.com/allape/openkvm/kvm/clipboard/serialport"
 	"github.com/allape/openkvm/kvm/keymouse"
 )
@@ -12,7 +13,7 @@ func ClipboardFromConfig(conf config.Config, keyboard keymouse.Driver, mouse key
 	switch conf.Clipboard.Type {
 	case config.ClipboardNone:
 		l.Warn().Println("clipboard driver is none, no clipboard support")
-		return nil, err
+		return &none.Clipboard{}, nil
 	case config.ClipboardSerialPort:
 		km, err := KeymouseSerialDriverFromConfig(
 			conf, keyboard, mouse,
