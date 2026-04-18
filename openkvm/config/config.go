@@ -107,6 +107,12 @@ type VNC struct {
 	Password string `toml:"password"`
 }
 
+type WebRTC struct {
+	Enabled  bool   `toml:"enabled"`
+	JanusURL string `toml:"janus_url"`
+	Room     uint64 `toml:"room"`
+}
+
 type Config struct {
 	Websocket Websocket `toml:"websocket"`
 	Video     Video     `toml:"video"`
@@ -115,6 +121,7 @@ type Config struct {
 	Button    Button    `toml:"button"`
 	Clipboard Clipboard `toml:"clipboard"`
 	VNC       VNC       `toml:"vnc"`
+	WebRTC    WebRTC    `toml:"webrtc"`
 }
 
 func GetConfig() (Config, error) {

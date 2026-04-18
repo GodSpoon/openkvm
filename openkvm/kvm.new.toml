@@ -124,3 +124,11 @@ ext_btn = "2"
 type = "serialport"
 src = "/dev/ttyACM0"
 ext = { baud = "921600" }
+
+[webrtc]
+# Set to true to enable WebRTC streaming (requires Janus gateway)
+enabled = false
+# Janus WebSocket URL (e.g., ws://localhost:8188/janus)
+janus_url = "ws://localhost:8188/janus"
+# Video room ID to publish to
+room = 1234
