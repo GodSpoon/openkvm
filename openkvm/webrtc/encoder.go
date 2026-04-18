@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/allape/gogger"
@@ -19,6 +20,8 @@ type FFmpegEncoder struct {
 	stdin    io.WriteCloser
 	stdout   io.Reader
 	stopChan chan struct{}
+	stopped  bool
+	mu       sync.Mutex
 }
 
 func NewFFmpegEncoder(width, height int, frameRate float64) *FFmpegEncoder {
@@ -34,20 +37,21 @@ func (e *FFmpegEncoder) Start() error {
 	// FFmpeg command to encode MJPEG from stdin to H.264
 	// Using libx264 with ultrafast settings for low latency
 	e.cmd = exec.Command("ffmpeg",
-		"-re",                   // Read input at native frame rate
-		"-f", "mjpeg",          // Input format
-		"-i", "pipe:0",         // Read from stdin
-		"-c:v", "libx264",      // H.264 codec
-		"-preset", "ultrafast",  // Low latency preset
-		"-tune", "zerolatency", // Zero latency tuning
-		"-b:v", "2500k",        // Bitrate
-		"-max-delay", "500000",  // Max demux delay (500ms)
-		"-bufsize", "5000k",    // Buffer size
-		"-fpsprobesize", "0",    // Don't probe FPS
-		"-an",                   // No audio
-		"-f", "h264",           // Output format
-		"-flush_packets", "1",   // Flush packets immediately
-		"pipe:1",                // Write to stdout
+		"-re",                      // Read input at native frame rate
+		"-fflags", "nobuffer",     // Disable buffering for low latency
+		"-flags", "low_delay",     // Low delay mode
+		"-f", "image2pipe",       // Input format (JPEG frames via pipe)
+		"-i", "pipe:0",           // Read from stdin
+		"-c:v", "libx264",        // H.264 codec
+		"-preset", "ultrafast",    // Low latency preset
+		"-tune", "zerolatency",   // Zero latency tuning
+		"-b:v", "2500k",          // Bitrate
+		"-max_delay", "500000",    // Max demux delay (500ms)
+		"-bufsize", "5000k",      // Buffer size
+		"-an",                     // No audio
+		"-f", "h264",             // Output format
+		"-flush_packets", "1",     // Flush packets immediately
+		"pipe:1",                 // Write to stdout
 	)
 
 	var err error
@@ -66,6 +70,7 @@ func (e *FFmpegEncoder) Start() error {
 		return fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
+	// Log stderr in background - don't block
 	go func() {
 		buf := make([]byte, 1024)
 		for {
@@ -86,32 +91,49 @@ func (e *FFmpegEncoder) Start() error {
 }
 
 func (e *FFmpegEncoder) EncodeFrame(mjpegData []byte) ([]byte, error) {
-	if e.stdin == nil {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.stdin == nil || e.stopped {
 		return nil, fmt.Errorf("encoder not started")
 	}
 
 	// Write MJPEG frame to FFmpeg stdin
-	n, err := e.stdin.Write(mjpegData)
+	_, err := e.stdin.Write(mjpegData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to write frame: %w", err)
 	}
 
-	// Read H.264 output
-	// FFmpeg outputs NAL units, we need to read them as they come
+	// Read H.264 output with timeout
 	buf := make([]byte, 65536)
-	n, err = e.stdout.Read(buf)
-	if err != nil && err != io.EOF {
-		return nil, fmt.Errorf("failed to read encoded frame: %w", err)
-	}
+	e.cmd.StdoutPipe()
+	readChan := make(chan int, 1)
+	go func() {
+		n, _ := e.stdout.Read(buf)
+		readChan <- n
+	}()
 
-	if n == 0 {
+	select {
+	case n := <-readChan:
+		if n > 0 {
+			return buf[:n], nil
+		}
+		return nil, nil
+	case <-time.After(100 * time.Millisecond):
+		// Timeout - FFmpeg hasn't produced output yet
 		return nil, nil
 	}
-
-	return buf[:n], nil
 }
 
 func (e *FFmpegEncoder) Stop() error {
+	e.mu.Lock()
+	if e.stopped {
+		e.mu.Unlock()
+		return nil
+	}
+	e.stopped = true
+	e.mu.Unlock()
+
 	close(e.stopChan)
 
 	if e.stdin != nil {
