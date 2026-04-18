@@ -1,0 +1,76 @@
+version: "3.8"
+
+services:
+  janus:
+    image: nepoex/janus:latest
+    container_name: janus-gateway
+    restart: unless-stopped
+    ports:
+      - "8188:8188"   # Janus WebSocket
+      - "8088:8088"   # Janus HTTP
+      - "7088:7088"   # Janus Admin
+      - "5000:5000"   # Janus Gateway (for WebRTC data channels)
+      - "10000-10099:10000-10099/udp"  # RTP/RTCP ports for WebRTC
+    environment:
+      JANUS_IP: "0.0.0.0"
+      JANUS_RTP_PORT_RANGE: "10000-10099"
+      JANUS_ADMIN_SECRET: "janus-secret"
+      JANUS_STUN_SERVER: "stun:stun.l.google.com:19302"
+      JANUS_TURN_SERVER: "turn:coturn:3478"
+      JANUS_TURN_USER: "openkvm"
+      JANUS_TURN_PASS: "openkvm123"
+    volumes:
+      - janus-config:/etc/janus/janus.transport.websocket.jcfg
+      - janus-logs:/var/log/janus
+    networks:
+      - janus-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7088/admin/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  coturn:
+    image: instrumentisto/coturn:latest
+    container_name: coturn-stun-turn
+    restart: unless-stopped
+    ports:
+      - "3478:3478"   # STUN/TURN primary
+      - "3478:3478/udp"  # STUN/TURN UDP
+      - "5349:5349"   # TURN TLS
+      - "5349:5349/udp"  # TURN TLS UDP
+    environment:
+      TURNSERVER_IP: "0.0.0.0"
+      DETECT_EXTERNAL_IP: "true"
+      LISTENING_PORT: "3478"
+      TLS_LISTENING_PORT: "5349"
+      REALM: "openkvm"
+      SIMPLE_LOG: "true"
+      # Credentials - change in production
+      CREDENTIALS: "openkvm:openkvm123"
+    volumes:
+      - coturn-log:/var/log
+    networks:
+      - janus-net
+
+  janus-web:
+    image: nginx:alpine
+    container_name: janus-web
+    restart: unless-stopped
+    ports:
+      - "8180:80"
+    volumes:
+      - ./janus-web:/usr/share/nginx/html:ro
+    networks:
+      - janus-net
+    depends_on:
+      - janus
+
+volumes:
+  janus-config:
+  janus-logs:
+  coturn-log:
+
+networks:
+  janus-net:
+    driver: bridge

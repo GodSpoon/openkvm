@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenKVM WebRTC - PiKVM Style</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            background: #16213e;
+            padding: 1rem 2rem;
+            border-bottom: 1px solid #0f3460;
+        }
+        header h1 { font-size: 1.5rem; color: #e94560; }
+        header .subtitle { font-size: 0.875rem; color: #888; margin-top: 0.25rem; }
+
+        main {
+            flex: 1;
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        #video-container {
+            width: 100%;
+            max-width: 1280px;
+            aspect-ratio: 16/9;
+            background: #0f0f1a;
+            border-radius: 8px;
+            overflow: hidden;
+            position: relative;
+            border: 2px solid transparent;
+            transition: border-color 0.3s;
+        }
+        #video-container.streaming { border-color: #4ade80; }
+        #video-container.connecting { border-color: #fbbf24; }
+
+        #remote-video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            background: #000;
+        }
+
+        .overlay {
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .badge.video { background: #4ade80; color: #000; }
+        .badge.audio { background: #60a5fa; color: #000; }
+
+        #status-bar {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.75rem 1.5rem;
+            background: #16213e;
+            border-radius: 8px;
+            font-size: 0.875rem;
+        }
+        #status { display: flex; align-items: center; gap: 0.5rem; }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ef4444;
+        }
+        .status-dot.connected { background: #4ade80; }
+        .status-dot.connecting { background: #fbbf24; animation: pulse 1s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+        .stats {
+            display: flex;
+            gap: 1.5rem;
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: #888;
+        }
+        .stat-label { color: #555; margin-right: 0.25rem; }
+
+        .controls {
+            display: flex;
+            gap: 1rem;
+        }
+
+        button {
+            padding: 0.75rem 2rem;
+            border: none;
+            border-radius: 4px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        #connect-btn {
+            background: #e94560;
+            color: white;
+        }
+        #connect-btn:hover:not(:disabled) { background: #d63d56; transform: translateY(-1px); }
+        #connect-btn:disabled { background: #4a4a5a; cursor: not-allowed; }
+
+        #disconnect-btn {
+            background: #333;
+            color: white;
+        }
+        #disconnect-btn:hover:not(:disabled) { background: #444; transform: translateY(-1px); }
+        #disconnect-btn:disabled { background: #2a2a3a; cursor: not-allowed; }
+
+        #error-container {
+            width: 100%;
+            max-width: 600px;
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid #ef4444;
+            border-radius: 4px;
+            padding: 1rem;
+            display: none;
+        }
+        #error-container.visible { display: block; }
+        #error-title { color: #ef4444; font-weight: 600; margin-bottom: 0.5rem; }
+        #error-message { font-size: 0.875rem; color: #ccc; }
+
+        #logs-container {
+            width: 100%;
+            max-width: 800px;
+            margin-top: 1rem;
+        }
+        #logs-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 1rem;
+            background: #16213e;
+            border-radius: 4px 4px 0 0;
+            font-size: 0.75rem;
+            color: #888;
+        }
+        #clear-logs { background: none; border: none; color: #888; cursor: pointer; padding: 0.25rem 0.5rem; }
+        #clear-logs:hover { color: #eee; }
+        #logs {
+            background: #0a0a12;
+            padding: 1rem;
+            font-family: monospace;
+            font-size: 0.7rem;
+            max-height: 150px;
+            overflow-y: auto;
+            border-radius: 0 0 4px 4px;
+        }
+        .log-entry { margin: 0.125rem 0; }
+        .log-debug { color: #555; }
+        .log-info { color: #60a5fa; }
+        .log-warn { color: #fbbf24; }
+        .log-error { color: #ef4444; }
+        .log-success { color: #4ade80; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>OpenKVM WebRTC</h1>
+        <div class="subtitle">Low-latency KVM over WebRTC via Janus Gateway</div>
+    </header>
+
+    <main>
+        <div id="video-container">
+            <video id="remote-video" autoplay playsinline></video>
+            <div class="overlay">
+                <span id="video-badge" class="badge video" style="display: none;">VIDEO</span>
+                <span id="audio-badge" class="badge audio" style="display: none;">AUDIO</span>
+            </div>
+        </div>
+
+        <div id="status-bar">
+            <div id="status">
+                <div class="status-dot"></div>
+                <span>Disconnected</span>
+            </div>
+            <div class="stats">
+                <span><span class="stat-label">FPS:</span><span id="fps">--</span></span>
+                <span><span class="stat-label">Res:</span><span id="resolution">--</span></span>
+                <span><span class="stat-label">Bitrate:</span><span id="bitrate">--</span></span>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button id="connect-btn">Connect</button>
+            <button id="disconnect-btn" disabled>Disconnect</button>
+        </div>
+
+        <div id="error-container">
+            <div id="error-title">Connection Error</div>
+            <div id="error-message"></div>
+        </div>
+
+        <div id="logs-container">
+            <div id="logs-header">
+                <span>Debug Logs</span>
+                <button id="clear-logs">Clear</button>
+            </div>
+            <div id="logs"></div>
+        </div>
+    </main>
+
+    <!-- Include Janus.js from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/janus-gateway@1.1.0/lib/janus.js"></script>
+
+    <script>
+        (function() {
+            'use strict';
+
+            const CONFIG = {
+                server: 'ws://' + window.location.hostname + ':8188',
+                room: parseInt(new URLSearchParams(window.location.search).get('room')) || 1234,
+                display: 'OpenKVM Browser Client',
+                authToken: null,
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                ]
+            };
+
+            // DOM Elements
+            const videoContainer = document.getElementById('video-container');
+            const remoteVideo = document.getElementById('remote-video');
+            const videoBadge = document.getElementById('video-badge');
+            const audioBadge = document.getElementById('audio-badge');
+            const statusEl = document.getElementById('status');
+            const fpsEl = document.getElementById('fps');
+            const resolutionEl = document.getElementById('resolution');
+            const bitrateEl = document.getElementById('bitrate');
+            const connectBtn = document.getElementById('connect-btn');
+            const disconnectBtn = document.getElementById('disconnect-btn');
+            const errorContainer = document.getElementById('error-container');
+            const errorMessage = document.getElementById('error-message');
+            const logsEl = document.getElementById('logs');
+            const clearLogsBtn = document.getElementById('clear-logs');
+
+            let janus = null;
+            let videoRoom = null;
+            let streamHandle = null;
+            let remoteStream = null;
+            let bitrateTimer = null;
+
+            // Logging
+            const log = (level, msg) => {
+                const entry = document.createElement('div');
+                entry.className = 'log-entry log-' + level;
+                entry.textContent = new Date().toISOString().substr(11, 12) + ' ' + msg;
+                logsEl.appendChild(entry);
+                logsEl.scrollTop = logsEl.scrollHeight;
+                console[level === 'error' ? 'error' : 'log']('[Janus]', msg);
+            };
+
+            const setStatus = (state, text) => {
+                const dot = statusEl.querySelector('.status-dot');
+                statusEl.querySelector('span').textContent = text;
+                dot.className = 'status-dot ' + state;
+                videoContainer.className = '';
+                if (state === 'connected') {
+                    videoContainer.classList.add('streaming');
+                    videoBadge.style.display = 'block';
+                    audioBadge.style.display = 'block';
+                } else if (state === 'connecting') {
+                    videoContainer.classList.add('connecting');
+                }
+            };
+
+            const showError = (title, msg) => {
+                document.getElementById('error-title').textContent = title || 'Error';
+                errorMessage.textContent = msg;
+                errorContainer.classList.add('visible');
+            };
+
+            const hideError = () => errorContainer.classList.remove('visible');
+
+            const clearLogs = () => logsEl.innerHTML = '';
+
+            clearLogsBtn.addEventListener('click', clearLogs);
+
+            // Bitrate stats
+            const updateStats = () => {
+                if (streamHandle && streamHandle.getBitrate) {
+                    const bitrate = streamHandle.getBitrate();
+                    if (bitrate && bitrate !== 'nil') {
+                        bitrateEl.textContent = bitrate;
+                    }
+                }
+            };
+
+            // Initialize Janus
+            const initJanus = () => {
+                return new Promise((resolve, reject) => {
+                    Janus.init({
+                        debug: 'all',
+                        callback: () => {
+                            if (!Janus.isWebrtcSupported()) {
+                                reject(new Error('WebRTC not supported'));
+                                return;
+                            }
+                            resolve();
+                        }
+                    });
+                });
+            };
+
+            // Connect to Janus and join room
+            const connect = async () => {
+                hideError();
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = true;
+                setStatus('connecting', 'Connecting to Janus...');
+                log('info', 'Connecting to ' + CONFIG.server);
+
+                try {
+                    await initJanus();
+                    log('info', 'Janus initialized');
+
+                    janus = new Janus({
+                        server: CONFIG.server,
+                        success: () => {
+                            log('info', 'WebSocket connected');
+                            joinRoom();
+                        },
+                        error: (err) => {
+                            log('error', 'Janus error: ' + err);
+                            showError('Connection Error', err);
+                            setStatus('disconnected', 'Connection failed');
+                            connectBtn.disabled = false;
+                        },
+                        disconnected: () => {
+                            log('warn', 'Janus disconnected');
+                            setStatus('disconnected', 'Disconnected');
+                            cleanup();
+                        },
+                        destroyed: () => {
+                            log('info', 'Janus destroyed');
+                        }
+                    });
+                } catch (err) {
+                    log('error', 'Init error: ' + err);
+                    showError('Initialization Error', err.message);
+                    setStatus('disconnected', 'Initialization failed');
+                    connectBtn.disabled = false;
+                }
+            };
+
+            // Join the video room
+            const joinRoom = () => {
+                janus.attach({
+                    plugin: 'janus.plugin.videoroom',
+                    success: (handle) => {
+                        streamHandle = handle;
+                        log('info', 'Attached to videoroom plugin');
+
+                        // Join the room as subscriber
+                        const register = {
+                            request: 'join',
+                            room: CONFIG.room,
+                            ptype: 'subscriber',
+                            display: CONFIG.display
+                        };
+
+                        if (CONFIG.authToken) {
+                            register.token = CONFIG.authToken;
+                        }
+
+                        streamHandle.send({ message: register });
+                    },
+                    error: (err) => {
+                        log('error', 'Attach error: ' + err);
+                        showError('Plugin Error', 'Failed to attach videoroom: ' + err);
+                        setStatus('disconnected', 'Attach failed');
+                        connectBtn.disabled = false;
+                    },
+                    onmessage: (msg, jsep) => {
+                        log('debug', 'Received message: ' + JSON.stringify(msg));
+
+                        if (jsep) {
+                            log('info', 'Received SDP, processing...');
+                            streamHandle.createAnswer({
+                                jsep: jsep,
+                                media: { audioSend: false, videoSend: false, audioRecv: true, videoRecv: true },
+                                success: (jsep) => {
+                                    log('debug', 'Created answer SDP');
+                                    streamHandle.send({ message: { request: 'start', room: CONFIG.room }, jsep: jsep });
+                                },
+                                error: (err) => {
+                                    log('error', 'Create answer error: ' + err);
+                                    showError('SDP Error', 'Failed to create answer: ' + err);
+                                }
+                            });
+                        }
+
+                        if (msg.videoroom) {
+                            switch (msg.videoroom) {
+                                case 'attached':
+                                    log('success', 'Successfully attached to publisher stream');
+                                    setStatus('connected', 'Connected');
+                                    disconnectBtn.disabled = false;
+                                    startBitrateTimer();
+                                    break;
+                                case 'event':
+                                    if (msg.publishers && msg.publishers.length > 0) {
+                                        log('info', 'Found ' + msg.publishers.length + ' publishers');
+                                    }
+                                    if (msg.leaving) {
+                                        log('info', 'Publisher left: ' + msg.leaving);
+                                    }
+                                    if (msg.error) {
+                                        log('error', 'Videoroom error: ' + msg.error);
+                                        showError('Room Error', msg.error);
+                                    }
+                                    break;
+                                case 'slow_link':
+                                    log('warn', 'Slow link detected - possible bandwidth issue');
+                                    break;
+                            }
+                        }
+                    },
+                    onremotetrack: (track, mid, on) => {
+                        log('info', 'Remote track: ' + track.kind + ' (mid=' + mid + ', on=' + on + ')');
+
+                        if (on) {
+                            if (!remoteStream) {
+                                remoteStream = new MediaStream();
+                                remoteVideo.srcObject = remoteStream;
+                            }
+                            remoteStream.addTrack(track);
+
+                            if (track.kind === 'video') {
+                                videoBadge.style.display = 'block';
+                                // Observe video for resolution changes
+                                const observer = new ResizeObserver(() => {
+                                    resolutionEl.textContent = remoteVideo.videoWidth + 'x' + remoteVideo.videoHeight;
+                                });
+                                observer.observe(remoteVideo);
+                            } else if (track.kind === 'audio') {
+                                audioBadge.style.display = 'block';
+                            }
+                        } else {
+                            // Track removed
+                            if (remoteStream) {
+                                const streams = remoteStream.getTracks();
+                                const removedTrack = streams.find(t => t.id === track.id);
+                                if (removedTrack) {
+                                    remoteStream.removeTrack(removedTrack);
+                                }
+                            }
+                        }
+                    },
+                    oncleanup: () => {
+                        log('info', 'Plugin cleanup');
+                        cleanup();
+                    },
+                    detach: () => {
+                        log('info', 'Plugin detached');
+                    }
+                });
+            };
+
+            const startBitrateTimer = () => {
+                bitrateTimer = setInterval(updateStats, 1000);
+            };
+
+            const cleanup = () => {
+                if (bitrateTimer) {
+                    clearInterval(bitrateTimer);
+                    bitrateTimer = null;
+                }
+                if (remoteStream) {
+                    remoteStream.getTracks().forEach(t => t.stop());
+                    remoteStream = null;
+                }
+                remoteVideo.srcObject = null;
+                videoBadge.style.display = 'none';
+                audioBadge.style.display = 'none';
+                fpsEl.textContent = '--';
+                resolutionEl.textContent = '--';
+                bitrateEl.textContent = '--';
+                streamHandle = null;
+            };
+
+            const disconnect = () => {
+                log('info', 'Disconnecting...');
+                cleanup();
+
+                if (streamHandle) {
+                    streamHandle.send({ message: { request: 'leave' } });
+                    streamHandle.detach();
+                }
+
+                if (janus) {
+                    janus.destroy();
+                    janus = null;
+                }
+
+                setStatus('disconnected', 'Disconnected');
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+            };
+
+            // Event listeners
+            connectBtn.addEventListener('click', connect);
+            disconnectBtn.addEventListener('click', disconnect);
+
+            // Initial log
+            log('info', 'OpenKVM WebRTC client ready');
+            log('info', 'Janus: ' + CONFIG.server + ', Room: ' + CONFIG.room);
+        })();
+    </script>
+</body>
+</html>

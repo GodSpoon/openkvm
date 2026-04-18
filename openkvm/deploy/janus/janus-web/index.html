@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenKVM WebRTC</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            background: #16213e;
+            padding: 1rem 2rem;
+            border-bottom: 1px solid #0f3460;
+        }
+        header h1 {
+            font-size: 1.5rem;
+            color: #e94560;
+        }
+        main {
+            flex: 1;
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1rem;
+        }
+        #video-container {
+            width: 100%;
+            max-width: 1280px;
+            aspect-ratio: 16/9;
+            background: #0f0f1a;
+            border-radius: 8px;
+            overflow: hidden;
+            position: relative;
+        }
+        #remote-video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        #status {
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            font-size: 0.875rem;
+            background: #16213e;
+        }
+        #status.connected { color: #4ade80; }
+        #status.connecting { color: #fbbf24; }
+        #status.disconnected { color: #ef4444; }
+        .controls {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+        button {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 4px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        #connect-btn {
+            background: #e94560;
+            color: white;
+        }
+        #connect-btn:hover { background: #d63d56; }
+        #connect-btn:disabled {
+            background: #4a4a5a;
+            cursor: not-allowed;
+        }
+        #disconnect-btn {
+            background: #4a4a5a;
+            color: white;
+        }
+        #disconnect-btn:hover { background: #5a5a6a; }
+        #disconnect-btn:disabled {
+            background: #3a3a4a;
+            cursor: not-allowed;
+        }
+        .error {
+            color: #ef4444;
+            padding: 1rem;
+            background: rgba(239, 68, 68, 0.1);
+            border-radius: 4px;
+            max-width: 600px;
+        }
+        #logs {
+            margin-top: 2rem;
+            width: 100%;
+            max-width: 800px;
+            background: #0f0f1a;
+            border-radius: 4px;
+            padding: 1rem;
+            font-family: monospace;
+            font-size: 0.75rem;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .log-entry { margin: 0.25rem 0; }
+        .log-error { color: #ef4444; }
+        .log-warn { color: #fbbf24; }
+        .log-info { color: #60a5fa; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>OpenKVM WebRTC</h1>
+    </header>
+    <main>
+        <div id="video-container">
+            <video id="remote-video" autoplay playsinline></video>
+        </div>
+        <div id="status" class="disconnected">Disconnected</div>
+        <div class="controls">
+            <button id="connect-btn">Connect</button>
+            <button id="disconnect-btn" disabled>Disconnect</button>
+        </div>
+        <div id="error" class="error" style="display: none;"></div>
+        <div id="logs"></div>
+    </main>
+
+    <script>
+        const Janus = (function() {
+            // Minimal Janus client implementation
+            const DEBUG = true;
+
+            let ws = null;
+            let opaqueId = null;
+            let videoRoomId = null;
+            let feedId = null;
+            let transactionId = 0;
+
+            const config = {
+                server: 'ws://' + window.location.hostname + ':8188',
+                room: parseInt(new URLSearchParams(window.location.search).get('room')) || 1234,
+            };
+
+            const log = (level, msg) => {
+                if (!DEBUG && level === 'debug') return;
+                const logsEl = document.getElementById('logs');
+                const entry = document.createElement('div');
+                entry.className = 'log-entry log-' + level;
+                entry.textContent = new Date().toISOString().substr(11, 8) + ' [' + level + '] ' + msg;
+                logsEl.appendChild(entry);
+                logsEl.scrollTop = logsEl.scrollHeight;
+                console[level === 'error' ? 'error' : 'log']('[Janus]', msg);
+            };
+
+            const setStatus = (state, text) => {
+                const statusEl = document.getElementById('status');
+                statusEl.className = state;
+                statusEl.textContent = text;
+            };
+
+            const showError = (msg) => {
+                const errorEl = document.getElementById('error');
+                errorEl.textContent = msg;
+                errorEl.style.display = 'block';
+            };
+
+            const hideError = () => {
+                document.getElementById('error').style.display = 'none';
+            };
+
+            const tid = () => 'tx' + (++transactionId);
+
+            const send = (request, callbacks) => {
+                const msg = {
+                    transaction: tid(),
+                    ...request
+                };
+                if (opaqueId) msg.opaque_id = opaqueId;
+
+                log('debug', 'Sending: ' + JSON.stringify(msg));
+                ws.send(JSON.stringify(msg));
+
+                if (callbacks && callbacks.async) {
+                    // Async handle, callback will be called on response
+                }
+            };
+
+            const handleMessage = (msg) => {
+                const transaction = msg.transaction;
+                if (msg.jsep) {
+                    handleRemoteJsep(msg.jsep);
+                }
+                if (msg.plugindata) {
+                    handlePluginData(msg.plugindata);
+                }
+                if (msg.error) {
+                    log('error', 'Janus error: ' + msg.error.code + ' ' + msg.error.reason);
+                    showError(msg.error.reason);
+                }
+            };
+
+            const handleRemoteJsep = (jsep) => {
+                log('info', 'Received remote SDP, setting as remote description');
+                peerConnection.setRemoteDescription(jsep)
+                    .then(() => createAnswer())
+                    .catch(err => {
+                        log('error', 'Remote SDP error: ' + err);
+                        showError('Failed to set remote description: ' + err);
+                    });
+            };
+
+            const handlePluginData = (plugindata) => {
+                const data = plugindata.data;
+                log('debug', 'Plugin data: ' + JSON.stringify(data));
+
+                if (data.videoroom) {
+                    switch (data.videoroom) {
+                        case 'joined':
+                            log('info', 'Joined room ' + data.room + ', my id: ' + data.id);
+                            feedId = data.id;
+                            // Query existing publishers
+                            send({ request: 'listparticipants', room: data.room });
+                            break;
+                        case 'event':
+                            if (data.publishers && data.publishers.length > 0) {
+                                // Subscribe to existing publishers
+                                data.publishers.forEach(publisher => {
+                                    log('info', 'Subscribing to publisher: ' + publisher.id);
+                                    subscribeTo(publisher.id, data.room);
+                                });
+                            }
+                            if (data.leaving) {
+                                log('info', 'Publisher left: ' + data.leaving);
+                            }
+                            break;
+                        case 'slow_link':
+                            log('warn', 'Slow link detected');
+                            break;
+                    }
+                }
+            };
+
+            let peerConnection = null;
+            let videoTrack = null;
+
+            const createPeerConnection = () => {
+                const pc = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' },
+                    ]
+                });
+
+                pc.onicecandidate = (e) => {
+                    if (e.candidate) {
+                        log('debug', 'ICE candidate: ' + e.candidate.candidate);
+                        // Trickle ICE - send candidates as they arrive
+                        send({
+                            transaction: tid(),
+                            janus: 'trickle',
+                            candidate: {
+                                sdpMid: e.candidate.sdpMid,
+                                sdpMLineIndex: e.candidate.sdpMLineIndex,
+                                candidate: e.candidate.candidate
+                            }
+                        });
+                    }
+                };
+
+                pc.ontrack = (e) => {
+                    log('info', 'Received remote track');
+                    const stream = e.streams[0];
+                    document.getElementById('remote-video').srcObject = stream;
+                };
+
+                pc.oniceconnectionstatechange = () => {
+                    log('info', 'ICE state: ' + pc.iceConnectionState);
+                    if (pc.iceConnectionState === 'connected') {
+                        setStatus('connected', 'Connected');
+                    } else if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+                        setStatus('disconnected', 'Disconnected');
+                    }
+                };
+
+                peerConnection = pc;
+                return pc;
+            };
+
+            const subscribeTo = (publisherId, roomId) => {
+                send({
+                    janus: 'message',
+                    body: {
+                        request: 'join',
+                        room: roomId,
+                        ptype: 'subscriber',
+                        feed: publisherId
+                    }
+                });
+            };
+
+            const createAnswer = () => {
+                return peerConnection.createAnswer()
+                    .then(answer => peerConnection.setLocalDescription(answer))
+                    .then(() => {
+                        send({
+                            janus: 'message',
+                            body: { request: 'start', room: videoRoomId },
+                            jsep: {
+                                type: 'answer',
+                                sdp: peerConnection.localDescription.sdp
+                            }
+                        });
+                        log('info', 'Sent answer to Janus');
+                    });
+            };
+
+            const connect = () => {
+                hideError();
+                setStatus('connecting', 'Connecting...');
+                log('info', 'Connecting to Janus at ' + config.server);
+
+                ws = new WebSocket(config.server);
+                ws.binaryType = 'arraybuffer';
+
+                ws.onopen = () => {
+                    log('info', 'WebSocket connected');
+                    opaqueId = 'openkvm-' + Date.now();
+
+                    // Create session
+                    send({ janus: 'create', transaction: tid() }, { async: true });
+                };
+
+                ws.onmessage = (e) => {
+                    if (typeof e.data === 'string') {
+                        const msg = JSON.parse(e.data);
+                        handleMessage(msg);
+                    }
+                };
+
+                ws.onerror = (e) => {
+                    log('error', 'WebSocket error');
+                    showError('Failed to connect to Janus gateway');
+                    setStatus('disconnected', 'Connection failed');
+                };
+
+                ws.onclose = () => {
+                    log('info', 'WebSocket closed');
+                    setStatus('disconnected', 'Disconnected');
+                };
+            };
+
+            const disconnect = () => {
+                if (ws) {
+                    ws.close();
+                    ws = null;
+                }
+                if (peerConnection) {
+                    peerConnection.close();
+                    peerConnection = null;
+                }
+                document.getElementById('remote-video').srcObject = null;
+                setStatus('disconnected', 'Disconnected');
+            };
+
+            // Event handlers
+            document.getElementById('connect-btn').addEventListener('click', connect);
+            document.getElementById('disconnect-btn').addEventListener('click', () => {
+                disconnect();
+                document.getElement('connect-btn').disabled = false;
+                document.getElementById('disconnect-btn').disabled = true;
+            });
+
+            // Initial state
+            log('info', 'Janus WebRTC client ready');
+            log('info', 'Server: ' + config.server + ', Room: ' + config.room);
+
+            return { connect, disconnect };
+        })();
+    </script>
+</body>
+</html>
