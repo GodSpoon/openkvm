@@ -1,8 +1,6 @@
-version: "3.8"
-
 services:
   janus:
-    image: nepoex/janus:latest
+    image: canyan/janus-gateway:latest
     container_name: janus-gateway
     restart: unless-stopped
     ports:
@@ -20,12 +18,12 @@ services:
       JANUS_TURN_USER: "openkvm"
       JANUS_TURN_PASS: "openkvm123"
     volumes:
-      - janus-config:/etc/janus/janus.transport.websocket.jcfg
+      - janus-config:/etc/janus
       - janus-logs:/var/log/janus
     networks:
       - janus-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7088/admin/info"]
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:7088/admin/info"]
       interval: 30s
       timeout: 10s
       retries: 3

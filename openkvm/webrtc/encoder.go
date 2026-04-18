@@ -16,12 +16,13 @@ type FFmpegEncoder struct {
 	width     int
 	height    int
 	frameRate float64
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	stdout   io.Reader
-	stopChan chan struct{}
-	stopped  bool
-	mu       sync.Mutex
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    io.ReadCloser
+	stopChan  chan struct{}
+	stopped   bool
+	mu        sync.Mutex
+	wg        sync.WaitGroup
 }
 
 func NewFFmpegEncoder(width, height int, frameRate float64) *FFmpegEncoder {
@@ -40,7 +41,7 @@ func (e *FFmpegEncoder) Start() error {
 		"-re",                      // Read input at native frame rate
 		"-fflags", "nobuffer",     // Disable buffering for low latency
 		"-flags", "low_delay",     // Low delay mode
-		"-f", "image2pipe",       // Input format (JPEG frames via pipe)
+		"-f", "mjpeg",             // Input format - MJPEG stream
 		"-i", "pipe:0",           // Read from stdin
 		"-c:v", "libx264",        // H.264 codec
 		"-preset", "ultrafast",    // Low latency preset
@@ -51,7 +52,7 @@ func (e *FFmpegEncoder) Start() error {
 		"-an",                     // No audio
 		"-f", "h264",             // Output format
 		"-flush_packets", "1",     // Flush packets immediately
-		"pipe:1",                 // Write to stdout
+		"pipe:1",                  // Write to stdout
 	)
 
 	var err error
@@ -71,7 +72,9 @@ func (e *FFmpegEncoder) Start() error {
 	}
 
 	// Log stderr in background - don't block
+	e.wg.Add(1)
 	go func() {
+		defer e.wg.Done()
 		buf := make([]byte, 1024)
 		for {
 			n, err := stderr.Read(buf)
@@ -105,24 +108,28 @@ func (e *FFmpegEncoder) EncodeFrame(mjpegData []byte) ([]byte, error) {
 	}
 
 	// Read H.264 output with timeout
-	buf := make([]byte, 65536)
-	e.cmd.StdoutPipe()
-	readChan := make(chan int, 1)
-	go func() {
-		n, _ := e.stdout.Read(buf)
-		readChan <- n
-	}()
+	// Use SetReadDeadline for non-blocking read
+	if deadliner, ok := e.stdout.(interface {
+		SetReadDeadline(time.Time) error
+	}); ok {
+		deadliner.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	}
 
-	select {
-	case n := <-readChan:
-		if n > 0 {
-			return buf[:n], nil
+	buf := make([]byte, 65536)
+	n, err := e.stdout.Read(buf)
+	if err != nil {
+		if err == io.EOF {
+			return nil, nil
 		}
-		return nil, nil
-	case <-time.After(100 * time.Millisecond):
-		// Timeout - FFmpeg hasn't produced output yet
+		// Timeout or other error - this is expected if FFmpeg is still encoding
 		return nil, nil
 	}
+
+	if n > 0 {
+		return buf[:n], nil
+	}
+
+	return nil, nil
 }
 
 func (e *FFmpegEncoder) Stop() error {
@@ -140,10 +147,16 @@ func (e *FFmpegEncoder) Stop() error {
 		e.stdin.Close()
 	}
 
+	if e.stdout != nil {
+		e.stdout.Close()
+	}
+
 	if e.cmd != nil && e.cmd.Process != nil {
 		e.cmd.Process.Kill()
 		e.cmd.Wait()
 	}
+
+	e.wg.Wait()
 
 	encLogger.Info().Println("FFmpeg encoder stopped")
 	return nil
