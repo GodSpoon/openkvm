@@ -7,6 +7,7 @@ import (
 	"github.com/allape/openkvm/factory"
 	"github.com/allape/openkvm/kvm"
 	"github.com/allape/openkvm/kvm/button"
+	"github.com/allape/openkvm/webrtc"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -115,6 +116,26 @@ func main() {
 	videoCodec, err := factory.VideoCodecFromConfig(conf)
 	if err != nil {
 		l.Error().Fatalln("video codec from config:", err)
+	}
+
+	// Initialize WebRTC streamer if enabled
+	var webrtcStreamer *webrtc.Streamer
+	if conf.WebRTC.Enabled {
+		err = v.Open()
+		if err != nil {
+			l.Error().Fatalln("open video for WebRTC:", err)
+		}
+
+		webrtcStreamer, err = factory.WebRTCStreamerFromConfig(conf, v)
+		if err != nil {
+			l.Error().Fatalln("WebRTC streamer from config:", err)
+		}
+
+		err = webrtcStreamer.Start()
+		if err != nil {
+			l.Error().Fatalln("start WebRTC streamer:", err)
+		}
+		l.Info().Println("WebRTC streaming enabled")
 	}
 
 	server, err := kvm.New(k, v, m, videoCodec, clipboard, kvm.Options{
@@ -266,4 +287,8 @@ func main() {
 
 	sig := <-sigs
 	l.Info().Println("exiting with", sig)
+
+	if webrtcStreamer != nil {
+		webrtcStreamer.Stop()
+	}
 }
