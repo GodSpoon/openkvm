@@ -49,10 +49,42 @@ go run . -c kvm.toml
 
 ## ESP32-S3 Firmware
 
-Flash using Arduino IDE or CLI:
+### Flashing (Recommended)
+
+Use the automated flash script (installs Arduino CLI if needed):
 ```bash
+cd openkvm
+./flash-esp32.sh              # Auto-detect serial port
+./flash-esp32.sh /dev/ttyACM0 # Specify port manually
+```
+
+### Manual Flashing
+
+If Arduino CLI is already installed:
+```bash
+cd openkvm
+
+# Compile
 arduino-cli compile -b esp32:esp32:esp32s3 km/esp32s3-arduino/main/
-arduino-cli upload . --fqbn esp32:esp32:esp32s3 -p /dev/ttyACM0
+
+# Upload (specify your serial port)
+arduino-cli upload -b esp32:esp32:esp32s3 -p /dev/ttyACM0 km/esp32s3-arduino/main/
+```
+
+### Monitoring Serial Output
+
+After flashing, connect to see debug output:
+```bash
+screen /dev/ttyACM0 921600
+```
+Press `Ctrl+A` then `k` to exit screen.
+
+### Finding the Serial Port
+
+If ESP32 doesn't appear at `/dev/ttyACM0`, check:
+```bash
+ls -la /dev/ttyACM* /dev/ttyUSB*  # List all serial devices
+dmesg | grep tty                  # Recent device connections
 ```
 
 ## V4L Commands

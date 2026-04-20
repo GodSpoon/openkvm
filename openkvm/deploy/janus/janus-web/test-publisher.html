@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenKVM Test Publisher</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+        h1 { color: #e94560; margin-bottom: 1rem; }
+        .video-preview { margin: 1rem 0; }
+        video { max-width: 100%; max-height: 300px; background: #0f0f1a; }
+        #status { padding: 0.5rem 1rem; border-radius: 4px; margin: 1rem 0; }
+        #status.connected { color: #4ade80; background: rgba(74, 222, 128, 0.1); }
+        #status.connecting { color: #fbbf24; background: rgba(251, 191, 36, 0.1); }
+        #status.disconnected { color: #ef4444; background: rgba(239, 68, 68, 0.1); }
+        #status.publishing { color: #60a5fa; background: rgba(96, 165, 250, 0.1); }
+        button {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 4px;
+            font-size: 1rem;
+            cursor: pointer;
+            margin: 0.25rem;
+        }
+        #start-btn { background: #e94560; color: white; }
+        #start-btn:hover { background: #d63d56; }
+        #stop-btn { background: #4a4a5a; color: white; }
+        #stop-btn:disabled { background: #3a3a4a; cursor: not-allowed; }
+        #logs {
+            margin-top: 1rem;
+            background: #0f0f1a;
+            border-radius: 4px;
+            padding: 1rem;
+            font-family: monospace;
+            font-size: 0.75rem;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .log-entry { margin: 0.25rem 0; }
+        .log-error { color: #ef4444; }
+        .log-warn { color: #fbbf24; }
+        .log-info { color: #60a5fa; }
+    </style>
+</head>
+<body>
+    <h1>OpenKVM Test Publisher</h1>
+    <p>Publishes sample.webm to Janus VideoRoom for testing.</p>
+
+    <div id="feed-id" style="margin: 1rem 0; font-family: monospace;"></div>
+
+    <div class="video-preview">
+        <video id="preview-video" controls muted>
+            <source src="sample.webm" type="video/webm">
+        </video>
+    </div>
+
+    <div id="status" class="disconnected">Not Connected</div>
+    <div>
+        <button id="start-btn">Start Publishing</button>
+        <button id="stop-btn" disabled>Stop</button>
+    </div>
+    <div id="logs"></div>
+
+    <script>
+        const Janus = (function() {
+            const DEBUG = true;
+            let ws = null;
+            let opaqueId = null;
+            let sessionId = null;
+            let handleId = null;
+            let videoRoomId = null;
+            let transactionId = 0;
+            let peerConnection = null;
+            let localStream = null;
+
+            const config = {
+                server: 'ws://localhost:27100/janus',
+                room: parseInt(new URLSearchParams(window.location.search).get('room')) || 1234,
+                videoFile: 'sample.webm'
+            };
+
+            const log = (level, msg) => {
+                const logsEl = document.getElementById('logs');
+                const entry = document.createElement('div');
+                entry.className = 'log-entry log-' + level;
+                entry.textContent = new Date().toISOString().substr(11, 8) + ' [' + level + '] ' + msg;
+                logsEl.appendChild(entry);
+                logsEl.scrollTop = logsEl.scrollHeight;
+                console[level === 'error' ? 'error' : 'log']('[Publisher]', msg);
+            };
+
+            const setStatus = (state, text) => {
+                const statusEl = document.getElementById('status');
+                statusEl.className = state;
+                statusEl.textContent = text;
+            };
+
+            const tid = () => 'tx' + (++transactionId);
+
+            const send = (request) => {
+                const msg = { transaction: tid(), ...request };
+                if (opaqueId) msg.opaque_id = opaqueId;
+                if (sessionId && !msg.session_id) msg.session_id = sessionId;
+                if (handleId && !msg.handle_id) msg.handle_id = handleId;
+                log('debug', 'Sending: ' + JSON.stringify(msg));
+                ws.send(JSON.stringify(msg));
+            };
+
+            const handleMessage = (msg) => {
+                log('debug', 'Received: ' + JSON.stringify(msg));
+
+                if (msg.janus === 'success' && msg.data && msg.data.id && !msg.session_id) {
+                    sessionId = msg.data.id;
+                    log('info', 'Session created: ' + sessionId);
+                    send({ janus: 'attach', plugin: 'janus.plugin.videoroom', session_id: sessionId });
+                    return;
+                }
+
+                if (msg.janus === 'success' && msg.data && msg.data.id && msg.session_id) {
+                    handleId = msg.data.id;
+                    log('info', 'Attached to plugin, handle: ' + handleId);
+                    send({
+                        janus: 'message',
+                        body: { request: 'join', room: config.room, ptype: 'publisher', display: 'test publisher' }
+                    });
+                    return;
+                }
+
+                if (msg.janus === 'event' && msg.plugindata) {
+                    const data = msg.plugindata.data;
+                    log('info', 'Plugin event: ' + data.videoroom);
+
+                    if (data.videoroom === 'joined') {
+                        log('info', 'Joined room ' + data.room + ', my id: ' + data.id);
+                        videoRoomId = data.room;
+                        feedId = data.id;
+                        document.getElementById('feed-id').textContent = 'Feed ID: ' + data.id + ' (use ?room=' + data.room + '&mode=subscriber&feed=' + data.id + ' to subscribe)';
+                        setStatus('publishing', 'Ready to publish');
+                        // Start publishing after joining
+                        startPublishing();
+                    }
+
+                    if (data.videoroom === 'event' && data.publishers) {
+                        log('info', 'Other publishers in room: ' + data.publishers.length);
+                    }
+                }
+
+                if (msg.jsep) {
+                    log('info', 'Received offer from Janus, answering...');
+                    peerConnection.setRemoteDescription(msg.jsep)
+                        .then(() => createAnswer())
+                        .catch(err => log('error', 'SDP error: ' + err));
+                }
+
+                if (msg.error) {
+                    log('error', 'Janus error: ' + msg.error.code + ' ' + msg.error.reason);
+                }
+            };
+
+            const createPeerConnection = () => {
+                const pc = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                    ]
+                });
+
+                pc.onicecandidate = (e) => {
+                    if (e.candidate) {
+                        send({
+                            janus: 'trickle',
+                            candidate: {
+                                sdpMid: e.candidate.sdpMid,
+                                sdpMLineIndex: e.candidate.sdpMLineIndex,
+                                candidate: e.candidate.candidate
+                            }
+                        });
+                    }
+                };
+
+                pc.oniceconnectionstatechange = () => {
+                    log('info', 'ICE state: ' + pc.iceConnectionState);
+                };
+
+                peerConnection = pc;
+                return pc;
+            };
+
+            const startPublishing = async () => {
+                if (!localStream) {
+                    const video = document.getElementById('preview-video');
+                    localStream = video.captureStream();
+                    log('info', 'Local stream captured, tracks: ' + localStream.getVideoTracks().length);
+                }
+
+                const pc = createPeerConnection();
+                localStream.getTracks().forEach(track => {
+                    pc.addTrack(track, localStream);
+                    log('info', 'Added track: ' + track.kind);
+                });
+
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                send({
+                    janus: 'message',
+                    body: { request: 'publish', room: videoRoomId, audiocodec: 'opus', videocodec: 'vp8' },
+                    jsep: { type: 'offer', sdp: offer.sdp }
+                });
+
+                log('info', 'Offer sent, publishing...');
+                setStatus('publishing', 'Publishing...');
+
+                // Ensure video keeps playing
+                const video = document.getElementById('preview-video');
+                video.play().catch(e => log('warn', 'Auto-play failed: ' + e));
+            };
+
+            const createAnswer = () => {
+                return peerConnection.createAnswer()
+                    .then(answer => peerConnection.setLocalDescription(answer))
+                    .then(() => {
+                        send({
+                            janus: 'message',
+                            body: { request: 'start', room: videoRoomId },
+                            jsep: { type: 'answer', sdp: peerConnection.localDescription.sdp }
+                        });
+                        log('info', 'Answer sent');
+                    });
+            };
+
+            const connect = () => {
+                setStatus('connecting', 'Connecting...');
+                log('info', 'Connecting to Janus at ' + config.server);
+
+                ws = new WebSocket(config.server, 'janus-protocol');
+                ws.binaryType = 'arraybuffer';
+
+                ws.onopen = () => {
+                    log('info', 'WebSocket connected');
+                    opaqueId = 'testpub-' + Date.now();
+                    send({ janus: 'create' });
+                };
+
+                ws.onmessage = (e) => {
+                    if (typeof e.data === 'string') {
+                        handleMessage(JSON.parse(e.data));
+                    }
+                };
+
+                ws.onerror = () => {
+                    log('error', 'WebSocket error');
+                    setStatus('disconnected', 'Connection failed');
+                };
+
+                ws.onclose = () => {
+                    log('info', 'WebSocket closed');
+                    setStatus('disconnected', 'Disconnected');
+                };
+            };
+
+            const disconnect = () => {
+                if (ws) {
+                    ws.close();
+                    ws = null;
+                }
+                if (peerConnection) {
+                    peerConnection.close();
+                    peerConnection = null;
+                }
+                sessionId = null;
+                handleId = null;
+                setStatus('disconnected', 'Disconnected');
+                document.getElementById('start-btn').disabled = false;
+                document.getElementById('stop-btn').disabled = true;
+            };
+
+            document.getElementById('start-btn').addEventListener('click', () => {
+                document.getElementById('start-btn').disabled = true;
+                document.getElementById('stop-btn').disabled = false;
+                connect();
+            });
+
+            document.getElementById('stop-btn').addEventListener('click', disconnect);
+
+            log('info', 'Test Publisher ready');
+            log('info', 'Server: ' + config.server + ', Room: ' + config.room);
+            log('info', 'Video: ' + config.videoFile);
+
+            return { connect, disconnect };
+        })();
+    </script>
+</body>
+</html>

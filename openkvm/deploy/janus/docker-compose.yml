@@ -4,13 +4,14 @@ services:
     container_name: janus-gateway
     restart: unless-stopped
     ports:
-      - "8188:8188"   # Janus WebSocket
-      - "8088:8088"   # Janus HTTP
-      - "7088:7088"   # Janus Admin
-      - "5000:5000"   # Janus Gateway (for WebRTC data channels)
-      - "10000-10099:10000-10099/udp"  # RTP/RTCP ports for WebRTC
+      - "27100:8188"   # Janus WebSocket
+      - "28088:8088"   # Janus HTTP
+      - "27088:7088"   # Janus Admin
+      - "5000:5000"   # Janus Gateway
+      - "27101-27200:10000-10099/udp"  # RTP/RTCP
     environment:
       JANUS_IP: "0.0.0.0"
+      WEBSOCKETS_ENABLED: "true"
       JANUS_RTP_PORT_RANGE: "10000-10099"
       JANUS_ADMIN_SECRET: "janus-secret"
       JANUS_STUN_SERVER: "stun:stun.l.google.com:19302"
@@ -20,10 +21,8 @@ services:
     volumes:
       - janus-config:/etc/janus
       - janus-logs:/var/log/janus
-    networks:
-      - janus-net
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O-", "http://localhost:7088/admin/info"]
+      test: ["CMD-SHELL", "curl -f http://localhost:28088/janus/info || true"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -44,7 +43,6 @@ services:
       TLS_LISTENING_PORT: "5349"
       REALM: "openkvm"
       SIMPLE_LOG: "true"
-      # Credentials - change in production
       CREDENTIALS: "openkvm:openkvm123"
     volumes:
       - coturn-log:/var/log

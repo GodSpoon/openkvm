@@ -228,7 +228,7 @@
             'use strict';
 
             const CONFIG = {
-                server: 'ws://' + window.location.hostname + ':8188',
+                server: 'ws://' + window.location.hostname + ':8188/janus',
                 room: parseInt(new URLSearchParams(window.location.search).get('room')) || 1234,
                 display: 'OpenKVM Browser Client',
                 authToken: null,

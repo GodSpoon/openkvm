@@ -138,13 +138,17 @@
 
             let ws = null;
             let opaqueId = null;
+            let sessionId = null;
+            let handleId = null;
             let videoRoomId = null;
             let feedId = null;
             let transactionId = 0;
 
             const config = {
-                server: 'ws://' + window.location.hostname + ':8188',
+                server: 'ws://localhost:27100/janus',
                 room: parseInt(new URLSearchParams(window.location.search).get('room')) || 1234,
+                mode: new URLSearchParams(window.location.search).get('mode') || 'auto', // 'auto', 'publisher', 'subscriber'
+                subscribeTo: parseInt(new URLSearchParams(window.location.search).get('feed')) || null,
             };
 
             const log = (level, msg) => {
@@ -182,6 +186,8 @@
                     ...request
                 };
                 if (opaqueId) msg.opaque_id = opaqueId;
+                if (sessionId && !msg.session_id) msg.session_id = sessionId;
+                if (handleId && !msg.handle_id) msg.handle_id = handleId;
 
                 log('debug', 'Sending: ' + JSON.stringify(msg));
                 ws.send(JSON.stringify(msg));
@@ -192,12 +198,76 @@
             };
 
             const handleMessage = (msg) => {
+                log('debug', 'Received: ' + JSON.stringify(msg));
                 const transaction = msg.transaction;
+
+                // Handle session creation success (no session_id in response means this is session creation)
+                if (msg.janus === 'success' && msg.data && msg.data.id && !msg.session_id) {
+                    sessionId = msg.data.id;
+                    log('info', 'Session created: ' + sessionId);
+                    // Now attach to videoroom plugin
+                    send({
+                        janus: 'attach',
+                        plugin: 'janus.plugin.videoroom',
+                        session_id: sessionId
+                    });
+                    return;
+                }
+
+                // Handle attach success (has session_id in response)
+                if (msg.janus === 'success' && msg.data && msg.data.id && msg.session_id) {
+                    handleId = msg.data.id;
+                    log('info', 'Attached to plugin, handle: ' + handleId);
+                    // Start keepalive timer to keep session alive
+                    if (keepaliveTimer) clearInterval(keepaliveTimer);
+                    keepaliveTimer = setInterval(() => {
+                        if (sessionId) {
+                            send({ janus: 'keepalive', session_id: sessionId });
+                            log('debug', 'Keepalive sent');
+                        }
+                    }, 30000);
+                    // Now join the room
+                    let joinAsSubscriber = config.mode === 'subscriber';
+                    const joinBody = {
+                        request: 'join',
+                        room: config.room,
+                        ptype: joinAsSubscriber ? 'subscriber' : 'publisher'
+                    };
+                    if (joinAsSubscriber) {
+                        if (config.subscribeTo) {
+                            joinBody.feed = config.subscribeTo;
+                        }
+                        // Create peer connection before joining for subscriber
+                        createPeerConnection();
+                    }
+                    send({
+                        janus: 'message',
+                        body: joinBody
+                    });
+                    return;
+                }
+
+                // Handle listparticipants response (comes as success with plugindata)
+                if (msg.janus === 'success' && msg.plugindata) {
+                    const data = msg.plugindata.data;
+                    if (data && data.videoroom === 'participants' && data.participants) {
+                        log('info', 'Received participants list: ' + data.participants.length + ' participants');
+                        data.participants.forEach(p => {
+                            if (p.publisher && p.id !== feedId) {
+                                log('info', 'Subscribing to publisher: ' + p.id);
+                                subscribeTo(p.id, data.room || videoRoomId);
+                            }
+                        });
+                    }
+                }
+
+                // Handle videoroom events
+                if (msg.janus === 'event' && msg.plugindata) {
+                    handlePluginData(msg.plugindata);
+                }
+
                 if (msg.jsep) {
                     handleRemoteJsep(msg.jsep);
-                }
-                if (msg.plugindata) {
-                    handlePluginData(msg.plugindata);
                 }
                 if (msg.error) {
                     log('error', 'Janus error: ' + msg.error.code + ' ' + msg.error.reason);
@@ -206,9 +276,17 @@
             };
 
             const handleRemoteJsep = (jsep) => {
-                log('info', 'Received remote SDP, setting as remote description');
+                log('info', 'Received remote SDP (type: ' + jsep.type + '), setting as remote description');
                 peerConnection.setRemoteDescription(jsep)
-                    .then(() => createAnswer())
+                    .then(() => {
+                        if (jsep.type === 'offer') {
+                            // Received offer, need to answer
+                            createAnswer();
+                        } else {
+                            // Received answer, WebRTC setup complete
+                            log('info', 'Remote description set, connection established');
+                        }
+                    })
                     .catch(err => {
                         log('error', 'Remote SDP error: ' + err);
                         showError('Failed to set remote description: ' + err);
@@ -224,8 +302,21 @@
                         case 'joined':
                             log('info', 'Joined room ' + data.room + ', my id: ' + data.id);
                             feedId = data.id;
-                            // Query existing publishers
-                            send({ request: 'listparticipants', room: data.room });
+                            videoRoomId = data.room;
+                            setStatus('connected', 'Connected');
+                            // Subscribe to existing publishers if any
+                            if (data.publishers && data.publishers.length > 0) {
+                                data.publishers.forEach(publisher => {
+                                    log('info', 'Subscribing to existing publisher: ' + publisher.id);
+                                    subscribeTo(publisher.id, data.room);
+                                });
+                            } else {
+                                // Query existing publishers if not included
+                                send({
+                                    janus: 'message',
+                                    body: { request: 'listparticipants', room: data.room }
+                                });
+                            }
                             break;
                         case 'event':
                             if (data.publishers && data.publishers.length > 0) {
@@ -248,8 +339,12 @@
 
             let peerConnection = null;
             let videoTrack = null;
+            let keepaliveTimer = null;
 
             const createPeerConnection = () => {
+                if (peerConnection) {
+                    peerConnection.close();
+                }
                 const pc = new RTCPeerConnection({
                     iceServers: [
                         { urls: 'stun:stun.l.google.com:19302' },
@@ -293,6 +388,9 @@
             };
 
             const subscribeTo = (publisherId, roomId) => {
+                videoRoomId = roomId;
+                // Create peer connection before subscribing so we're ready to receive the offer
+                createPeerConnection();
                 send({
                     janus: 'message',
                     body: {
@@ -325,7 +423,7 @@
                 setStatus('connecting', 'Connecting...');
                 log('info', 'Connecting to Janus at ' + config.server);
 
-                ws = new WebSocket(config.server);
+                ws = new WebSocket(config.server, 'janus-protocol');
                 ws.binaryType = 'arraybuffer';
 
                 ws.onopen = () => {
@@ -356,6 +454,10 @@
             };
 
             const disconnect = () => {
+                if (keepaliveTimer) {
+                    clearInterval(keepaliveTimer);
+                    keepaliveTimer = null;
+                }
                 if (ws) {
                     ws.close();
                     ws = null;
@@ -365,6 +467,8 @@
                     peerConnection = null;
                 }
                 document.getElementById('remote-video').srcObject = null;
+                sessionId = null;
+                handleId = null;
                 setStatus('disconnected', 'Disconnected');
             };
 
