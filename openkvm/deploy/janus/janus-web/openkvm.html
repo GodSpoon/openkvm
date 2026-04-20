@@ -380,7 +380,7 @@
 
                 if (msg.janus === 'event' && msg.plugindata) {
                     const data = msg.plugindata.data;
-                    log('Subscriber event: ' + data.videoroom);
+                    log('Subscriber event: ' + JSON.stringify(data));
 
                     if (data.videoroom === 'attached') {
                         log('Subscribed to feed: ' + data.id);
