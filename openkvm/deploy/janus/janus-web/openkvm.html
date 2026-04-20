@@ -168,6 +168,9 @@
 
         const send = (request) => {
             const msg = { transaction: tid(), ...request };
+            if (sessionId && !msg.session_id) msg.session_id = sessionId;
+            if (handleId && !msg.handle_id) msg.handle_id = handleId;
+            log('Pub TX: ' + JSON.stringify(msg).slice(0, 100), 'debug');
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify(msg));
             }
@@ -301,6 +304,9 @@
 
         const send = (request) => {
             const msg = { transaction: tid(), ...request };
+            if (sessionId && !msg.session_id) msg.session_id = sessionId;
+            if (handleId && !msg.handle_id) msg.handle_id = handleId;
+            log('Sub TX: ' + JSON.stringify(msg).slice(0, 100), 'debug');
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify(msg));
             }
