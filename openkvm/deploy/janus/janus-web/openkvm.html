@@ -21,11 +21,7 @@
             padding: 1.5rem;
             margin-bottom: 1rem;
         }
-        .video-container {
-            display: flex;
-            gap: 1rem;
-            flex-wrap: wrap;
-        }
+        .video-container { display: flex; gap: 1rem; flex-wrap: wrap; }
         .video-box {
             flex: 1;
             min-width: 300px;
@@ -83,7 +79,6 @@
             margin: 0.5rem 0;
             word-break: break-all;
         }
-        .info { color: #60a5fa; font-size: 0.85rem; margin: 0.5rem 0; }
         #logs {
             background: #0f0f1a;
             border-radius: 4px;
@@ -138,7 +133,7 @@
             <div class="card" style="margin: 0; padding: 1rem;">
                 <div id="sub-status" class="status disconnected">Not Connected</div>
                 <div class="form-group">
-                    <label>Subscribe to Feed ID (leave empty to auto-subscribe)</label>
+                    <label>Subscribe to Feed ID (leave empty for auto)</label>
                     <input type="text" id="sub-feed" placeholder="Auto" style="width: 200px;">
                 </div>
                 <div class="controls-row">
@@ -155,151 +150,99 @@
     </div>
 
     <script>
-    const Janus = (function() {
-        const DEBUG = true;
-        let ws = null;
-        let opaqueId = null;
-        let sessionId = null;
-        let handleId = null;
-        let videoRoomId = null;
-        let feedId = null;
-        let transactionId = 0;
-        let peerConnection = null;
-        let localStream = null;
-        let isPublisher = false;
+    const log = (msg, level = 'info') => {
+        const logsEl = document.getElementById('logs');
+        const entry = document.createElement('div');
+        entry.className = 'log-entry log-' + level;
+        entry.textContent = new Date().toISOString().substr(11, 8) + ' [' + level + '] ' + msg;
+        logsEl.appendChild(entry);
+        logsEl.scrollTop = logsEl.scrollHeight;
+    };
 
-        const log = (level, msg) => {
-            const logsEl = document.getElementById('logs');
-            const entry = document.createElement('div');
-            entry.className = 'log-entry log-' + level;
-            entry.textContent = new Date().toISOString().substr(11, 8) + ' [' + level + '] ' + msg;
-            logsEl.appendChild(entry);
-            logsEl.scrollTop = logsEl.scrollHeight;
-            if (level === 'error') console.error('[Janus]', msg);
-            else console.log('[Janus]', msg);
-        };
-
-        const setPubStatus = (state, text) => {
-            const el = document.getElementById('pub-status');
-            el.className = 'status ' + state;
-            el.textContent = text;
-        };
-
-        const setSubStatus = (state, text) => {
-            const el = document.getElementById('sub-status');
-            el.className = 'status ' + state;
-            el.textContent = text;
-        };
+    // Publisher state
+    const Pub = (() => {
+        let ws = null, sessionId = null, handleId = null, transactionId = 0;
+        let peerConnection = null, localStream = null, videoRoomId = null, feedId = null;
 
         const tid = () => 'tx' + (++transactionId);
 
         const send = (request) => {
             const msg = { transaction: tid(), ...request };
-            if (opaqueId) msg.opaque_id = opaqueId;
-            if (sessionId && !msg.session_id) msg.session_id = sessionId;
-            if (handleId && !msg.handle_id) msg.handle_id = handleId;
-            log('debug', 'Sending: ' + JSON.stringify(msg));
-            ws.send(JSON.stringify(msg));
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(msg));
+            }
         };
 
-        const handleMessage = (msg) => {
-            log('debug', 'Received: ' + JSON.stringify(msg));
+        const setStatus = (state, text) => {
+            const el = document.getElementById('pub-status');
+            el.className = 'status ' + state;
+            el.textContent = text;
+        };
 
-            if (msg.janus === 'success' && msg.data && msg.data.id && !msg.session_id) {
-                sessionId = msg.data.id;
-                log('info', 'Session created: ' + sessionId);
-                send({ janus: 'attach', plugin: 'janus.plugin.videoroom', session_id: sessionId });
-                return;
-            }
+        const start = () => {
+            const server = document.getElementById('janus-url').value;
+            const room = parseInt(document.getElementById('room-id').value);
 
-            if (msg.janus === 'success' && msg.data && msg.data.id && msg.session_id) {
-                handleId = msg.data.id;
-                log('info', 'Attached to plugin, handle: ' + handleId);
+            log('Publisher connecting to ' + server);
+            setStatus('connecting', 'Connecting...');
 
-                const janusUrl = document.getElementById('janus-url').value;
-                const roomId = parseInt(document.getElementById('room-id').value);
-                const subFeed = document.getElementById('sub-feed').value;
+            ws = new WebSocket(server, 'janus-protocol');
+            ws.binaryType = 'arraybuffer';
 
-                if (isPublisher) {
-                    send({
-                        janus: 'message',
-                        body: { request: 'join', room: roomId, ptype: 'publisher', display: 'OpenKVM Publisher' }
-                    });
-                } else {
-                    const joinBody = {
-                        request: 'join',
-                        room: roomId,
-                        ptype: 'subscriber'
-                    };
-                    if (subFeed) {
-                        joinBody.feed = parseInt(subFeed);
-                    }
-                    createPeerConnection();
-                    send({ janus: 'message', body: joinBody });
+            ws.onopen = () => {
+                log('Publisher connected');
+                send({ janus: 'create' });
+            };
+
+            ws.onmessage = (e) => {
+                const msg = JSON.parse(e.data);
+                log('Pub RX: ' + JSON.stringify(msg).slice(0, 100), 'debug');
+
+                if (msg.janus === 'success' && msg.data && !msg.session_id) {
+                    sessionId = msg.data.id;
+                    log('Publisher session: ' + sessionId);
+                    send({ janus: 'attach', plugin: 'janus.plugin.videoroom', session_id: sessionId });
                 }
-                return;
-            }
 
-            if (msg.janus === 'event' && msg.plugindata) {
-                const data = msg.plugindata.data;
-                log('info', 'Plugin event: ' + data.videoroom);
+                if (msg.janus === 'success' && msg.data && msg.session_id) {
+                    handleId = msg.data.id;
+                    log('Publisher handle: ' + handleId);
+                    send({ janus: 'message', body: { request: 'join', room, ptype: 'publisher', display: 'OpenKVM' }});
+                }
 
-                if (data.videoroom === 'joined') {
-                    log('info', 'Joined room ' + data.room + ', my id: ' + data.id);
-                    videoRoomId = data.room;
-                    feedId = data.id;
+                if (msg.janus === 'event' && msg.plugindata) {
+                    const data = msg.plugindata.data;
+                    log('Publisher event: ' + data.videoroom);
 
-                    if (isPublisher) {
+                    if (data.videoroom === 'joined') {
+                        videoRoomId = data.room;
+                        feedId = data.id;
                         document.getElementById('pub-feed').style.display = 'block';
                         document.getElementById('pub-feed').innerHTML =
                             'Feed ID: <strong>' + data.id + '</strong><br>' +
-                            '<small>Subscribe with: ?room=' + data.room + '&mode=subscriber&feed=' + data.id + '</small>';
-                        setPubStatus('publishing', 'Ready to publish');
+                            '<small>Subscribe: ?room=' + data.room + '&mode=subscriber&feed=' + data.id + '</small>';
+                        setStatus('publishing', 'Publishing...');
                         startPublishing();
-                    } else {
-                        setSubStatus('connected', 'Connected to room');
                     }
                 }
 
-                if (data.videoroom === 'event' && data.publishers && !isPublisher) {
-                    log('info', 'Publishers in room: ' + data.publishers.length);
-                    if (data.publishers.length > 0 && !document.getElementById('sub-feed').value) {
-                        const pub = data.publishers[0];
-                        log('info', 'Subscribing to publisher: ' + pub.id);
-                        subscribeTo(pub.id, data.room);
-                    }
+                if (msg.jsep) {
+                    log('Publisher SDP: ' + msg.jsep.type);
                 }
 
-                if (data.videoroom === 'attached' && !isPublisher) {
-                    log('info', 'Attached to feed: ' + data.id);
-                    // Auto-configure peer connection for subscription
+                if (msg.webrtcup) {
+                    log('Publisher WebRTC up!', 'info');
                 }
-            }
+            };
 
-            if (msg.jsep) {
-                log('info', 'Received SDP: ' + msg.jsep.type);
-                peerConnection.setRemoteDescription(msg.jsep)
-                    .then(() => {
-                        if (msg.jsep.type === 'offer') {
-                            return createAnswer();
-                        }
-                    })
-                    .catch(err => log('error', 'SDP error: ' + err));
-            }
-
-            if (msg.webrtcup) {
-                log('info', 'WebRTC up!');
-                if (isPublisher) setPubStatus('publishing', 'Publishing...');
-                else setSubStatus('connected', 'Receiving video');
-            }
-
-            if (msg.error) {
-                log('error', 'Janus error: ' + msg.error.code + ' ' + msg.error.reason);
-            }
+            ws.onclose = () => log('Publisher disconnected');
+            ws.onerror = () => log('Publisher error', 'error');
         };
 
-        const createPeerConnection = () => {
-            if (peerConnection) peerConnection.close();
+        const startPublishing = async () => {
+            const video = document.getElementById('preview-video');
+            localStream = video.captureStream();
+            log('Local stream tracks: ' + localStream.getVideoTracks().length);
 
             peerConnection = new RTCPeerConnection({
                 iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
@@ -315,34 +258,16 @@
                 }
             };
 
-            peerConnection.ontrack = (e) => {
-                log('info', 'Remote track received');
-                document.getElementById('remote-video').srcObject = e.streams[0];
-            };
-
             peerConnection.oniceconnectionstatechange = () => {
-                log('info', 'ICE: ' + peerConnection.iceConnectionState);
+                log('Pub ICE: ' + peerConnection.iceConnectionState);
             };
 
-            if (isPublisher && localStream) {
-                localStream.getTracks().forEach(track => {
-                    peerConnection.addTrack(track, localStream);
-                });
-            }
+            localStream.getTracks().forEach(track => {
+                peerConnection.addTrack(track, localStream);
+            });
 
-            return peerConnection;
-        };
-
-        const startPublishing = async () => {
-            if (!localStream) {
-                const video = document.getElementById('preview-video');
-                localStream = video.captureStream();
-                log('info', 'Local stream captured, tracks: ' + localStream.getVideoTracks().length);
-            }
-
-            const pc = createPeerConnection();
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
 
             send({
                 janus: 'message',
@@ -350,151 +275,187 @@
                 jsep: { type: 'offer', sdp: offer.sdp }
             });
 
-            log('info', 'Publishing...');
-            setPubStatus('publishing', 'Publishing...');
-
-            const video = document.getElementById('preview-video');
-            video.play().catch(e => log('warn', 'Auto-play: ' + e));
+            video.play().catch(e => log('Auto-play: ' + e));
         };
 
-        const subscribeTo = (publisherId, roomId) => {
-            videoRoomId = roomId;
-            createPeerConnection();
-            send({
-                janus: 'message',
-                body: { request: 'join', room: roomId, ptype: 'subscriber', feed: publisherId }
-            });
+        const stop = () => {
+            if (ws) { ws.close(); ws = null; }
+            if (peerConnection) { peerConnection.close(); peerConnection = null; }
+            sessionId = handleId = videoRoomId = feedId = null;
+            localStream = null;
+            document.getElementById('pub-feed').style.display = 'none';
+            setStatus('disconnected', 'Disconnected');
+            document.getElementById('pub-start').disabled = false;
+            document.getElementById('pub-stop').disabled = true;
         };
 
-        const createAnswer = () => {
-            return peerConnection.createAnswer()
-                .then(answer => peerConnection.setLocalDescription(answer))
-                .then(() => {
-                    send({
-                        janus: 'message',
-                        body: { request: 'start', room: videoRoomId },
-                        jsep: { type: 'answer', sdp: peerConnection.localDescription.sdp }
+        return { start, stop };
+    })();
+
+    // Subscriber state
+    const Sub = (() => {
+        let ws = null, sessionId = null, handleId = null, transactionId = 0;
+        let peerConnection = null, videoRoomId = null;
+
+        const tid = () => 'tx' + (++transactionId);
+
+        const send = (request) => {
+            const msg = { transaction: tid(), ...request };
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(msg));
+            }
+        };
+
+        const setStatus = (state, text) => {
+            const el = document.getElementById('sub-status');
+            el.className = 'status ' + state;
+            el.textContent = text;
+        };
+
+        const connect = () => {
+            const server = document.getElementById('janus-url').value;
+            const room = parseInt(document.getElementById('room-id').value);
+            const feed = document.getElementById('sub-feed').value;
+
+            log('Subscriber connecting to ' + server);
+            setStatus('connecting', 'Connecting...');
+
+            ws = new WebSocket(server, 'janus-protocol');
+            ws.binaryType = 'arraybuffer';
+
+            ws.onopen = () => {
+                log('Subscriber connected');
+                send({ janus: 'create' });
+            };
+
+            ws.onmessage = (e) => {
+                const msg = JSON.parse(e.data);
+                log('Sub RX: ' + JSON.stringify(msg).slice(0, 100), 'debug');
+
+                if (msg.janus === 'success' && msg.data && !msg.session_id) {
+                    sessionId = msg.data.id;
+                    log('Subscriber session: ' + sessionId);
+                    send({ janus: 'attach', plugin: 'janus.plugin.videoroom', session_id: sessionId });
+                }
+
+                if (msg.janus === 'success' && msg.data && msg.session_id) {
+                    handleId = msg.data.id;
+                    log('Subscriber handle: ' + handleId);
+
+                    peerConnection = new RTCPeerConnection({
+                        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
                     });
-                    log('info', 'Answer sent');
-                });
-        };
 
-        const connectPublisher = () => {
-            isPublisher = true;
-            const janusUrl = document.getElementById('janus-url').value;
-            setPubStatus('connecting', 'Connecting...');
-            log('info', 'Connecting to ' + janusUrl);
+                    peerConnection.onicecandidate = (e) => {
+                        if (e.candidate) {
+                            send({ janus: 'trickle', candidate: {
+                                sdpMid: e.candidate.sdpMid,
+                                sdpMLineIndex: e.candidate.sdpMLineIndex,
+                                candidate: e.candidate.candidate
+                            }});
+                        }
+                    };
 
-            ws = new WebSocket(janusUrl, 'janus-protocol');
-            ws.binaryType = 'arraybuffer';
+                    peerConnection.ontrack = (e) => {
+                        log('Remote track received');
+                        document.getElementById('remote-video').srcObject = e.streams[0];
+                    };
 
-            ws.onopen = () => {
-                log('info', 'Connected');
-                opaqueId = 'openkvm-pub-' + Date.now();
-                send({ janus: 'create' });
-            };
+                    peerConnection.oniceconnectionstatechange = () => {
+                        log('Sub ICE: ' + peerConnection.iceConnectionState);
+                    };
 
-            ws.onmessage = (e) => {
-                if (typeof e.data === 'string') {
-                    handleMessage(JSON.parse(e.data));
+                    const joinBody = { request: 'join', room, ptype: 'subscriber' };
+                    if (feed) {
+                        joinBody.feed = parseInt(feed);
+                    }
+                    send({ janus: 'message', body: joinBody });
+                }
+
+                if (msg.janus === 'event' && msg.plugindata) {
+                    const data = msg.plugindata.data;
+                    log('Subscriber event: ' + data.videoroom);
+
+                    if (data.videoroom === 'attached') {
+                        log('Subscribed to feed: ' + data.id);
+                    }
+
+                    if (data.videoroom === 'event' && data.publishers && !feed) {
+                        if (data.publishers.length > 0) {
+                            const pub = data.publishers[0];
+                            log('Auto-subscribing to: ' + pub.id);
+                            videoRoomId = data.room;
+                            send({ janus: 'message', body: { request: 'join', room: data.room, ptype: 'subscriber', feed: pub.id }});
+                        }
+                    }
+                }
+
+                if (msg.jsep) {
+                    log('Sub SDP: ' + msg.jsep.type);
+                    peerConnection.setRemoteDescription(msg.jsep)
+                        .then(() => {
+                            if (msg.jsep.type === 'offer') {
+                                return peerConnection.createAnswer();
+                            }
+                        })
+                        .then(answer => {
+                            if (answer) {
+                                peerConnection.setLocalDescription(answer);
+                                send({
+                                    janus: 'message',
+                                    body: { request: 'start', room: videoRoomId },
+                                    jsep: { type: 'answer', sdp: answer.sdp }
+                                });
+                            }
+                        })
+                        .catch(err => log('SDP error: ' + err, 'error'));
+                }
+
+                if (msg.webrtcup) {
+                    log('Subscriber WebRTC up!', 'info');
+                    setStatus('connected', 'Receiving video');
                 }
             };
 
-            ws.onerror = () => {
-                log('error', 'WebSocket error');
-                setPubStatus('disconnected', 'Connection failed');
-            };
-
-            ws.onclose = () => {
-                log('info', 'Disconnected');
-                setPubStatus('disconnected', 'Disconnected');
-            };
-        };
-
-        const connectSubscriber = () => {
-            isPublisher = false;
-            const janusUrl = document.getElementById('janus-url').value;
-            setSubStatus('connecting', 'Connecting...');
-            log('info', 'Connecting subscriber to ' + janusUrl);
-
-            ws = new WebSocket(janusUrl, 'janus-protocol');
-            ws.binaryType = 'arraybuffer';
-
-            ws.onopen = () => {
-                log('info', 'Subscriber connected');
-                opaqueId = 'openkvm-sub-' + Date.now();
-                send({ janus: 'create' });
-            };
-
-            ws.onmessage = (e) => {
-                if (typeof e.data === 'string') {
-                    handleMessage(JSON.parse(e.data));
-                }
-            };
-
-            ws.onerror = () => {
-                log('error', 'WebSocket error');
-                setSubStatus('disconnected', 'Connection failed');
-            };
-
-            ws.onclose = () => {
-                log('info', 'Subscriber disconnected');
-                setSubStatus('disconnected', 'Disconnected');
-            };
+            ws.onclose = () => { log('Subscriber disconnected'); setStatus('disconnected', 'Disconnected'); };
+            ws.onerror = () => log('Subscriber error', 'error');
         };
 
         const disconnect = () => {
-            if (ws) {
-                ws.close();
-                ws = null;
-            }
-            if (peerConnection) {
-                peerConnection.close();
-                peerConnection = null;
-            }
-            sessionId = null;
-            handleId = null;
-            feedId = null;
-            localStream = null;
-            document.getElementById('pub-feed').style.display = 'none';
+            if (ws) { ws.close(); ws = null; }
+            if (peerConnection) { peerConnection.close(); peerConnection = null; }
+            sessionId = handleId = videoRoomId = null;
             document.getElementById('remote-video').srcObject = null;
-        };
-
-        // Publisher controls
-        document.getElementById('pub-start').addEventListener('click', () => {
-            document.getElementById('pub-start').disabled = true;
-            document.getElementById('pub-stop').disabled = false;
-            document.getElementById('sub-connect').disabled = true;
-            connectPublisher();
-        });
-
-        document.getElementById('pub-stop').addEventListener('click', () => {
-            disconnect();
-            document.getElementById('pub-start').disabled = false;
-            document.getElementById('pub-stop').disabled = true;
-            document.getElementById('sub-connect').disabled = false;
-            setPubStatus('disconnected', 'Disconnected');
-        });
-
-        // Subscriber controls
-        document.getElementById('sub-connect').addEventListener('click', () => {
-            document.getElementById('sub-connect').disabled = true;
-            document.getElementById('sub-disconnect').disabled = false;
-            document.getElementById('pub-start').disabled = true;
-            connectSubscriber();
-        });
-
-        document.getElementById('sub-disconnect').addEventListener('click', () => {
-            disconnect();
+            setStatus('disconnected', 'Disconnected');
             document.getElementById('sub-connect').disabled = false;
             document.getElementById('sub-disconnect').disabled = true;
-            document.getElementById('pub-start').disabled = false;
-            setSubStatus('disconnected', 'Disconnected');
-        });
+        };
 
-        log('info', 'OpenKVM Janus Control ready');
-        return { connectPublisher, connectSubscriber, disconnect };
+        return { connect, disconnect };
     })();
+
+    // Event bindings
+    document.getElementById('pub-start').addEventListener('click', () => {
+        document.getElementById('pub-start').disabled = true;
+        document.getElementById('pub-stop').disabled = false;
+        Pub.start();
+    });
+
+    document.getElementById('pub-stop').addEventListener('click', () => {
+        Pub.stop();
+    });
+
+    document.getElementById('sub-connect').addEventListener('click', () => {
+        document.getElementById('sub-connect').disabled = true;
+        document.getElementById('sub-disconnect').disabled = false;
+        Sub.connect();
+    });
+
+    document.getElementById('sub-disconnect').addEventListener('click', () => {
+        Sub.disconnect();
+    });
+
+    log('OpenKVM Janus Control ready');
     </script>
 </body>
 </html>
