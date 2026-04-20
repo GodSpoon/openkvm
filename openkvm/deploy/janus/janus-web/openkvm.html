@@ -103,7 +103,7 @@
         <h2>Janus Connection</h2>
         <div class="form-group">
             <label>Janus WebSocket URL</label>
-            <input type="text" id="janus-url" value="ws://192.168.4.3:27100/janus" style="width: 300px;">
+            <input type="text" id="janus-url" value="ws://localhost:27100/janus" style="width: 300px;">
         </div>
         <div class="form-group">
             <label>Room ID</label>
@@ -215,17 +215,48 @@
 
                 if (msg.janus === 'event' && msg.plugindata) {
                     const data = msg.plugindata.data;
-                    log('Publisher event: ' + data.videoroom);
+                    log('Publisher event: ' + data.videoroom + (msg.jsep ? ' (has SDP offer)' : ''));
 
                     if (data.videoroom === 'joined') {
                         videoRoomId = data.room;
                         feedId = data.id;
                         document.getElementById('pub-feed').style.display = 'block';
-                        document.getElementById('pub-feed').innerHTML =
+                        document.getElementByById('pub-feed').innerHTML =
                             'Feed ID: <strong>' + data.id + '</strong><br>' +
                             '<small>Subscribe: ?room=' + data.room + '&mode=subscriber&feed=' + data.id + '</small>';
                         setStatus('publishing', 'Publishing...');
-                        startPublishing();
+
+                        if (msg.jsep) {
+                            log('Publisher received offer from Janus, answering...');
+                            peerConnection = new RTCPeerConnection({
+                                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+                            });
+                            peerConnection.onicecandidate = (e) => {
+                                if (e.candidate) {
+                                    send({ janus: 'trickle', candidate: {
+                                        sdpMid: e.candidate.sdpMid,
+                                        sdpMLineIndex: e.candidate.sdpMLineIndex,
+                                        candidate: e.candidate.candidate
+                                    }});
+                                }
+                            };
+                            peerConnection.oniceconnectionstatechange = () => {
+                                log('Pub ICE: ' + peerConnection.iceConnectionState);
+                            };
+                            peerConnection.ontrack = (e) => {
+                                log('Pub remote track received');
+                            };
+                            await peerConnection.setRemoteDescription(msg.jsep);
+                            const answer = await peerConnection.createAnswer();
+                            await peerConnection.setLocalDescription(answer);
+                            send({
+                                janus: 'message',
+                                body: { request: 'publish', room: videoRoomId, audiocodec: 'opus', videocodec: 'vp8' },
+                                jsep: { type: 'answer', sdp: answer.sdp }
+                            });
+                        } else {
+                            startPublishing();
+                        }
                     }
                 }
 
