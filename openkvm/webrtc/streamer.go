@@ -2,40 +2,22 @@ package webrtc
 
 import (
 	"bytes"
-	"image"
+	"fmt"
 	"image/jpeg"
 	"io"
 	"time"
 
-	"github.com/allape/gogger"
 	"github.com/allape/openkvm/kvm/video"
 )
-
-var l = gogger.New("webrtc.streamer")
 
 type Streamer struct {
 	janus     *JanusClient
 	video     video.Driver
-	encoder   *h264encoder
+	encoder   *FFmpegEncoder
 	stopChan  chan struct{}
 	frameRate float64
-}
-
-type h264encoder struct {
-	width    int
-	height   int
-	frameNum int
-}
-
-func (e *h264encoder) encodeFrame(img image.Image) ([]byte, error) {
-	// For now, encode as MJPEG since H.264 encoding requires native library
-	// In production, use x264 or gox264 for hardware-accelerated H.264
-	var buf bytes.Buffer
-	err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85})
-	if err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	width     int
+	height    int
 }
 
 func NewStreamer(janus *JanusClient, v video.Driver, frameRate float64) *Streamer {
@@ -44,13 +26,15 @@ func NewStreamer(janus *JanusClient, v video.Driver, frameRate float64) *Streame
 		video:     v,
 		stopChan:  make(chan struct{}),
 		frameRate: frameRate,
+		width:     1280,
+		height:    720,
 	}
 }
 
 func (s *Streamer) Start() error {
-	s.encoder = &h264encoder{
-		width:  1280,
-		height: 720,
+	s.encoder = NewFFmpegEncoder(s.width, s.height, s.frameRate)
+	if err := s.encoder.Start(); err != nil {
+		return err
 	}
 
 	go s.streamLoop()
@@ -59,25 +43,32 @@ func (s *Streamer) Start() error {
 
 func (s *Streamer) Stop() {
 	close(s.stopChan)
+	if s.encoder != nil {
+		s.encoder.Stop()
+	}
 }
 
 func (s *Streamer) streamLoop() {
+	defer func() {
+		fmt.Println("WebRTC streamer loop ended")
+	}()
+
 	interval := time.Duration(float64(time.Second) / s.frameRate)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	l.Info().Printf("WebRTC streamer started at %.2f fps", s.frameRate)
+	fmt.Printf("WebRTC streamer started at %.2f fps\n", s.frameRate)
 
 	for {
 		select {
 		case <-s.stopChan:
-			l.Info().Println("WebRTC streamer stopped")
+			fmt.Println("WebRTC streamer stopped")
 			return
 		case <-ticker.C:
 			frame, err := s.video.NextFrame()
 			if err != nil {
 				if err != io.EOF {
-					l.Warn().Printf("next frame error: %v", err)
+					fmt.Printf("next frame error: %v\n", err)
 				}
 				continue
 			}
@@ -86,18 +77,27 @@ func (s *Streamer) streamLoop() {
 				continue
 			}
 
-			data, err := s.encoder.encodeFrame(frame)
+			// Encode image to MJPEG first, then FFmpeg encodes to H.264
+			var buf bytes.Buffer
+			err = jpeg.Encode(&buf, frame, &jpeg.Options{Quality: 85})
 			if err != nil {
-				l.Warn().Printf("encode error: %v", err)
+				fmt.Printf("jpeg encode error: %v\n", err)
 				continue
 			}
 
-			// For Janus videoroom, we need actual H.264
-			// This MJPEG data would need proper H.264 encoding
-			// For now, write directly - Janus will handle it
+			h264Data, err := s.encoder.EncodeFrame(buf.Bytes())
+			if err != nil {
+				fmt.Printf("h264 encode error: %v\n", err)
+				continue
+			}
+
+			if h264Data == nil || len(h264Data) == 0 {
+				continue
+			}
+
 			duration := time.Duration(float64(time.Second) / s.frameRate)
-			if err := s.janus.WriteVideo(data, duration); err != nil {
-				l.Warn().Printf("write video error: %v", err)
+			if err := s.janus.WriteVideo(h264Data, duration); err != nil {
+				fmt.Printf("write video error: %v\n", err)
 			}
 		}
 	}

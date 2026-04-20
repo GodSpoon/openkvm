@@ -6,11 +6,7 @@ import (
 	"os/exec"
 	"sync"
 	"time"
-
-	"github.com/allape/gogger"
 )
-
-var encLogger = gogger.New("webrtc.encoder")
 
 type FFmpegEncoder struct {
 	width     int
@@ -81,7 +77,7 @@ func (e *FFmpegEncoder) Start() error {
 			if err != nil {
 				return
 			}
-			encLogger.Verbose().Println(string(buf[:n]))
+				fmt.Printf("[encoder] %s", string(buf[:n]))
 		}
 	}()
 
@@ -89,7 +85,7 @@ func (e *FFmpegEncoder) Start() error {
 		return fmt.Errorf("failed to start FFmpeg: %w", err)
 	}
 
-	encLogger.Info().Printf("FFmpeg H.264 encoder started (%dx%d @ %.2f fps)", e.width, e.height, e.frameRate)
+	fmt.Printf("FFmpeg H.264 encoder started (%dx%d @ %.2f fps)\n", e.width, e.height, e.frameRate)
 	return nil
 }
 
@@ -158,7 +154,7 @@ func (e *FFmpegEncoder) Stop() error {
 
 	e.wg.Wait()
 
-	encLogger.Info().Println("FFmpeg encoder stopped")
+	fmt.Println("FFmpeg encoder stopped")
 	return nil
 }
 
